@@ -48,11 +48,21 @@ jobs:
         with:
           targets: ${{ matrix.target }}
 
-      # aarch64 Linux 交叉编译需要 zig cc（musl 静态链接）
+      # aarch64 Linux 交叉编译需要 zig（musl 静态链接）
       - uses: taiki-e/install-action@v2
         if: matrix.target == 'aarch64-unknown-linux-musl'
         with:
           tool: cargo-zigbuild
+
+      - name: Install zig
+        if: matrix.target == 'aarch64-unknown-linux-musl'
+        shell: bash
+        run: |
+          curl -fL https://ziglang.org/download/0.11.1/zig-x86_64-linux-0.11.1.tar.xz -o zig.tar.xz
+          tar -xf zig.tar.xz
+          sudo mv zig-x86_64-linux-0.11.1 /opt/zig
+          sudo ln -s /opt/zig/zig /usr/local/bin/zig
+          zig version
 
       - name: Build
         shell: bash
