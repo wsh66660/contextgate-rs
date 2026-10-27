@@ -687,7 +687,7 @@ fn scan_jdbc(
         while let Some(rel) = body[search_from..].find(needle) {
             let pos = search_from + rel;
             // 前缀校验：接收者含 jdbc/JdbcTemplate（宽松）
-            let head = &body[pos.saturating_sub(60)..pos];
+            let head = char_safe_window(body, pos, 60);
             if head.to_lowercase().contains("jdbctemplate") || head.to_lowercase().contains("jdbc") {
                 // 取第一个参数（字符串表达式，顶层逗号前）
                 let arg_start = pos + needle.len();
@@ -824,6 +824,16 @@ fn scan_method_calls(
     }
 }
 
+/// 取 end 前 width 字节的窗口，起始点回退到字符边界
+/// （直接 `body[pos-60..pos]` 在窗口内有多字节字符（中文注释）时 panic）
+fn char_safe_window(body: &str, end: usize, width: usize) -> &str {
+    let mut s = end.saturating_sub(width);
+    while !body.is_char_boundary(s) {
+        s += 1;
+    }
+    &body[s..end]
+}
+
 fn is_mapper_type(t: &str) -> bool {
     t.ends_with("Mapper") || t.ends_with("Dao")
 }
@@ -943,6 +953,19 @@ pub fn collect_java_files(root: &Path) -> Vec<(String, String)> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn char_safe_window_with_chinese() {
+        // 回归：60 字节窗口起点落在中文多字节字符中间会 panic
+        // （browser_java_new / ems 等真实项目复现：inside '录' / '名'）
+        let body = "abc失败的查询记录平台名jdbcTemplate.queryForList(\n";
+        let end = body.find("queryForList(").unwrap();
+        let win = char_safe_window(body, end, 60);
+        assert!(win.contains("jdbcTemplate"));
+        // 窗口足够短时也应安全
+        assert!(!char_safe_window(body, 2, 60).is_empty());
+        assert_eq!(char_safe_window(body, 0, 60), "");
+    }
 
     #[test]
     fn chinese_comment_before_method_does_not_panic() {

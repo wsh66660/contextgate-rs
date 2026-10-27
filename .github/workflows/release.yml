@@ -126,5 +126,5 @@ jobs:
           gh release create "$VERSION" \
             --title "contextgate $VERSION" \
             --notes "## 安装\n\`\`\`bash\ncurl -LO https://github.com/wsh66660/contextgate-rs/releases/download/$VERSION/contextgate-<平台>.tar.gz\ntar -xzf contextgate-<平台>.tar.gz\n# 把 contextgate 放进 PATH 即可\n\`\`\`" \
-            --verify \
+            --verify-tag \
             dist/*

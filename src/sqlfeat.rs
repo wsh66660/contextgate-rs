@@ -179,22 +179,20 @@ pub fn extract_tables(toks: &[String]) -> BTreeSet<String> {
 /// - where/set 中 `col ?`、`col =`、`col like`、`col in` 左侧标识符
 pub fn extract_columns(toks: &[String]) -> BTreeSet<String> {
     let mut out = BTreeSet::new();
-    // SELECT 列表：从 select 到 from
-    let sel_start = toks.iter().position(|t| t == "select");
-    let sel_end = toks.iter().position(|t| t == "from");
-    if let (Some(s), Some(e)) = (sel_start, sel_end) {
-        for t in &toks[s + 1..e] {
-            let bare = t.split('.').next_back().unwrap_or("");
-            if bare == "*" || bare == "?" || bare.is_empty() {
-                continue;
+    // SELECT 列表：从 select 到「它之后的」from（DELETE ... IN (SELECT) 等语句里
+    // from 可能整体出现在 select 之前，旧逻辑直接切 [s+1..e] 会越界 panic）
+    if let Some(s) = toks.iter().position(|t| t == "select") {
+        if let Some(e) = toks.iter().position(|t| t == "from").filter(|&p| p > s) {
+            for t in &toks[s + 1..e] {
+                let bare = t.split('.').next_back().unwrap_or("");
+                if bare == "*" || bare == "?" || bare.is_empty() {
+                    continue;
+                }
+                if is_keyword(bare) {
+                    continue; // 关键字/聚合函数名不算列
+                }
+                out.insert(bare.to_string());
             }
-            if is_keyword(bare) && bare != "count" && bare != "sum" && bare != "avg" && bare != "min" && bare != "max" {
-                continue;
-            }
-            if is_keyword(bare) {
-                continue; // 聚合函数名不算列
-            }
-            out.insert(bare.to_string());
         }
     }
     // WHERE/ON/SET 侧：标识符后跟比较符或 in/like/between
@@ -257,6 +255,17 @@ mod tests {
         assert!(tables.contains("biz_order"));
         assert!(cols.contains("user_id"));
         assert!(sk.contains(&"?".to_string()));
+    }
+
+    #[test]
+    fn delete_in_subselect_does_not_panic() {
+        // 回归：from 在 select 之前出现时 [s+1..e] 切片越界 panic
+        // （xxl-job 清理型 SQL：DELETE FROM xxl_job_log WHERE id IN (SELECT ...)）
+        let (sk, tables, _) = normalize_sql(
+            "DELETE FROM xxl_job_log WHERE id IN (SELECT id FROM xxl_job_log WHERE gmt_create < ?)",
+        );
+        assert!(tables.contains("xxl_job_log"));
+        assert!(!sk.is_empty());
     }
 
     #[test]
