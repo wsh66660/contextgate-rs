@@ -123,8 +123,21 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           VERSION="${GITHUB_REF#refs/tags/}"
+          {
+            echo "## 安装"
+            echo ""
+            echo "下载对应平台的安装包，解压后把 contextgate 放进 PATH："
+            echo ""
+            echo "| 平台 | 下载 |"
+            echo "|---|---|"
+            echo "| macOS (Apple Silicon) | contextgate-darwin-arm64.tar.gz |"
+            echo "| macOS (Intel) | contextgate-darwin-x86_64.tar.gz |"
+            echo "| Linux x86_64（musl 静态） | contextgate-linux-x86_64.tar.gz |"
+            echo "| Linux ARM64 | contextgate-linux-arm64.tar.gz |"
+            echo "| Windows x86_64 | contextgate-windows-x86_64.zip |"
+            echo "| Windows ARM64 | contextgate-windows-arm64.zip |"
+          } > notes.md
           gh release create "$VERSION" \
             --title "contextgate $VERSION" \
-            --notes "## 安装\n\`\`\`bash\ncurl -LO https://github.com/wsh66660/contextgate-rs/releases/download/$VERSION/contextgate-<平台>.tar.gz\ntar -xzf contextgate-<平台>.tar.gz\n# 把 contextgate 放进 PATH 即可\n\`\`\`" \
-            --verify-tag \
+            --notes-file notes.md \
             dist/*
