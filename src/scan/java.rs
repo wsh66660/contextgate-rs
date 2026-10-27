@@ -331,7 +331,13 @@ fn parse_members(body: &str, cls: &mut JavaClass, _decl_line: u32, body_off: u32
             let head_start = last_top_boundary(&chars, j);
             let head: String = chars[head_start..j].iter().collect();
             // 行号：head_start 之前的换行数 + body 偏移
-            let line = body[..head_start].matches('\n').count() as u32 + body_off + 1;
+            // head_start 是字符索引，必须在字符空间数换行（直接切 body 会在中文处 panic）
+            let line = chars[..head_start]
+                .iter()
+                .filter(|c| **c == '\n')
+                .count() as u32
+                + body_off
+                + 1;
             // 方法体：找到参数 ')' 后的第一个 '{'
             let mut k = i;
             let mut paren = 0i32;
@@ -937,6 +943,25 @@ pub fn collect_java_files(root: &Path) -> Vec<(String, String)> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn chinese_comment_before_method_does_not_panic() {
+        // 回归：head_start 是字符索引，直接切 &str 会在中文多字节字符中间 panic
+        // （真实项目 LT47/MotongNetworkService 复现：end byte index ... inside '失'）
+        let src = "package com.demo;\n\
+                   // 失败的订单统计逻辑：失败原因分析\n\
+                   @Service\n\
+                   public class StatsService {\n\
+                       // 余额榜：裸 SELECT，触碰 users.wallet_balance。\n\
+                       public List<Object> topWallets() {\n\
+                           return jdbcTemplate.queryForList(sql);\n\
+                       }\n\
+                   }\n";
+        let cls = parse_java("StatsService.java", src).unwrap();
+        assert_eq!(cls.name, "StatsService");
+        assert_eq!(cls.methods.len(), 1, "methods: {:?}", cls.methods.len());
+        assert_eq!(cls.methods[0].name, "topWallets");
+    }
 
     #[test]
     fn parses_fields_and_methods() {
