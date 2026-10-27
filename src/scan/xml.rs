@@ -12,6 +12,17 @@ pub fn parse_xml_mapper(content: &str) -> (Option<String>, Vec<(String, String, 
         .captures(content)
         .and_then(|c| c.get(1).map(|m| m.as_str().to_string()));
 
+    // <sql id="...">片段表：<include refid="..."/> 解析用
+    let mut fragments: std::collections::BTreeMap<String, String> = std::collections::BTreeMap::new();
+    let sql_re = Regex::new(r#"(?s)<sql\b[^>]*id\s*=\s*"([^"]+)"[^>]*>(.*?)</sql>"#).unwrap();
+    for cap in sql_re.captures_iter(content) {
+        let fid = cap.get(1).map(|m| m.as_str().to_string()).unwrap_or_default();
+        let body = cap.get(2).map(|m| m.as_str().to_string()).unwrap_or_default();
+        if !fid.is_empty() {
+            fragments.insert(fid, flatten_dynamic_tags_inner(&body, &fragments, 0));
+        }
+    }
+
     let mut stmts = Vec::new();
     // regex crate 不支持反向引用，按标签类型逐个匹配
     for tag_name in ["select", "insert", "update", "delete"] {
@@ -36,9 +47,9 @@ pub fn parse_xml_mapper(content: &str) -> (Option<String>, Vec<(String, String, 
             // 起始行：用语句开始位置近似
             let start = cap.get(0).map(|m| m.start()).unwrap_or(0);
             let line = content[..start].matches('\n').count() as u32 + 1;
-            // 语句体：动态标签拍平为内部文本
+            // 语句体：动态标签拍平 + include 片段展开
             let mut text = cap.get(2).map(|m| m.as_str().to_string()).unwrap_or_default();
-            text = flatten_dynamic_tags(&text);
+            text = flatten_dynamic_tags_inner(&text, &fragments, 0);
             stmts.push((id, text, line));
         }
     }
@@ -46,10 +57,30 @@ pub fn parse_xml_mapper(content: &str) -> (Option<String>, Vec<(String, String, 
 }
 
 /// 拍平动态标签：<if test="..."> 保留内部文本；<foreach> 展开为一次迭代形状；
-/// <where>/<set>/<trim>/<include> 保留/替换为内部内容。
+/// <where>/<set>/<trim> 保留内部内容；<include refid="..."/> 展开为片段文本
+/// （解析不到的 refid 留空，避免标签文本混进 token 流污染列归因）。
 pub fn flatten_dynamic_tags(xml: &str) -> String {
+    flatten_dynamic_tags_inner(xml, &std::collections::BTreeMap::new(), 0)
+}
+
+fn flatten_dynamic_tags_inner(
+    xml: &str,
+    fragments: &std::collections::BTreeMap<String, String>,
+    depth: u32,
+) -> String {
     let mut text = xml.to_string();
-    // include -> 引用的 sql 片段不做跨段解析（v1 留空处理），保留位置即可
+    if depth < 4 {
+        let inc_re = Regex::new(r#"<include\b[^>]*refid\s*=\s*"([^"]+)"[^>]*/?>"#).unwrap();
+        text = inc_re
+            .replace_all(&text, |c: &regex::Captures| {
+                let refid = c.get(1).map(|m| m.as_str()).unwrap_or("");
+                fragments
+                    .get(refid)
+                    .cloned()
+                    .unwrap_or_default()
+            })
+            .to_string();
+    }
     for tag in ["where", "set", "trim", "if", "foreach", "choose", "when", "otherwise"] {
         let re = Regex::new(&format!(r#"(?is)<{tag}\b[^>]*>(.*?)</{tag}>"#)).unwrap();
         text = re
@@ -194,4 +225,32 @@ pub fn scan_routes(rel: &str, content: &str, class_name: &str, routes: &mut Vec<
         });
     }
     let _ = rel;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn include_refid_resolves_to_fragment() {
+        // 回归：<include refid="..."/> 未解析时，标签文本（include/refid/<//>/=）
+        // 会混进 token 流污染列归因（xxl-job 的 Base_Column_List 踩中）
+        let xml = r#"<mapper namespace="com.demo.XxlJobGroupDao">
+  <sql id="Base_Column_List">id, app_name, title</sql>
+  <select id="findAll">
+    SELECT <include refid="Base_Column_List" />
+    FROM xxl_job_group
+  </select>
+</mapper>"#;
+        let (_ns, stmts) = parse_xml_mapper(xml);
+        assert_eq!(stmts.len(), 1);
+        let (id, text, _line) = &stmts[0];
+        assert_eq!(id, "findAll");
+        assert!(text.contains("id, app_name, title"), "片段未展开: {text}");
+        assert!(!text.contains("include"), "标签残留: {text}");
+        let (_sk, tables, cols) = normalize_sql(text);
+        assert!(tables.contains("xxl_job_group"));
+        assert!(cols.contains("app_name"), "列归因: {:?}", cols);
+        assert!(!cols.contains("refid"), "列污染: {:?}", cols);
+    }
 }
