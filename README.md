@@ -7,13 +7,13 @@
 ```
 $ contextgate find my-spring-app "UPDATE users SET wallet_balance = 100.5 WHERE id = 42"
 
-1. [0.945] UserMapper#addBalance — annotation-update（src/main/java/com/demo/mapper/UserMapper.java:24）
+1. [1] UserMapper#addBalance — annotation-update [UPDATE]（src/main/java/com/demo/mapper/UserMapper.java:24）
    SQL 模板: UPDATE users SET wallet_balance = COALESCE(wallet_balance, 0) + #{delta} WHERE id = #{userId}
    涉及表: users
    触碰列: id, wallet_balance
    直接调用者: WalletController#recharge
    上游路由: POST /api/v1/wallet/recharge
-   依据: 表匹配 100%；列匹配 100%；骨架相似 67%
+   依据: 操作类型一致（UPDATE）；固定文本片段 2/2 命中（100%）；表匹配 100%；列匹配 100%
 ```
 
 ## 特性
@@ -82,6 +82,46 @@ contextgate find <项目根>/.contextgate/index.json "<SQL>"
 - MyBatis-Plus 内置方法的保守记录（`SELECT *` 全列上界）×0.6，避免虚高抢位
 - 动态 SQL 模板 ×1.05 略补偿
 
+## 工作原理
+
+### scan：索引是怎么建的
+
+纯静态、不编译项目、不连数据库。三遍扫描 + 一次逆向索引：
+
+**第一遍 — 类解析与实体→表映射**
+遍历所有 `.java` 文件，用线性扫描器（无回溯、非完整 AST）解析出类骨架：package、注解、字段、方法、常量。识别出实体类（`@TableName` 注解，或包名含 `entity/domain/model/po`）后建立 `实体 → 表` 映射：注解值优先，否则 camelCase→snake_case（`OrderItem` → `order_item`）。
+
+**第二遍 — SQL 记录 + 调用图 + 路由**（逐类）
+- **注解 SQL**：`@Select/@Insert/@Update/@Delete` 的字符串参数直接提取；
+- **JdbcTemplate**：扫 `query/update/execute(...)` 调用点取首参字符串表达式——字面量拼接、类级常量引用、方法内局部 `String` 变量逐链折叠，解析不了的成分折成 `?`；
+- **MyBatis-Plus 内置**：识别 `baseMapper.selectById(...)` / `service.list(...)` 等调用，从 `ServiceImpl<M, T>` 泛型链或实体字段类型绑定表，产出 `SELECT * FROM t` 形态的保守记录（标 `mp_builtin`）；
+- **调用图**：方法体内的 `a.b(...)` 调用收集为 `调用者#方法 → 被调者#方法` 边，Mapper 接口方法是图的汇点；
+- **路由**：controller 类的 `@RequestMapping/@GetMapping/...` 扫出 `METHOD path → Controller#handler`。
+
+**第三遍 — MyBatis XML**
+含 `<mapper` 的 `*.xml` 全部解析：提取 `<select>/<insert>/<update>/<delete>` 语句，动态标签拍平（`<if>` 留体内文本、`<foreach>` 展开一次迭代形状、`<include refid="..."/>` 展开同文件 `<sql id>` 片段），每条语句成为一条记录，`file:line` 取语句起始行。
+
+**逆向索引**
+调用图翻转后，对每条 SQL 记录节点向上 BFS：全部祖先即潜在调用者，祖先中的 `Controller#handler` 节点在路由表里查得可达 HTTP 路由。`find` 命中时能报「直接调用者 + 上游路由」就是这一步的产物——一条慢 SQL 直接追到对外入口。
+
+结果写入 `.contextgate/index.json`（格式见 [索引格式](#索引格式)）。
+
+### find：反查是怎么做的
+
+核心思想：**同一套特征提取跑在两侧**——索引侧（源码模板）与查询侧（实际执行的 SQL）走同一归一化，反查退化为一次打分检索而非字符串匹配。
+
+**第 1 步 — 归一化**
+两侧走同一 `skeleton_text`：字符串字面量、数字、`#{}`/`${}`/`?` 占位符统一折 `?`，去反引号，剥 `alias.col` 限定符前缀（`t.id` → `id`），统一小写与空白。token 流上另提取：表集合、列集合、操作类型（首 token）、`(表,别名)` 对。
+
+**第 2 步 — 逐记录打分**（信号与权重见 [匹配打分](#匹配打分)）
+- **固定文本片段召回（主信号）**：查询按 `?` 切成 ≥8 字符片段，与记录模板做逐字比对。慢日志里的 SQL 就是模板的渲染结果，片段命中即近必然来源；动态模板是执行 SQL 的超集（含所有 if 分支），执行片段必然出现在其中；
+- **表+别名 / 列包含度 / 结构相似度**：次级确认信号；
+- **门控**：操作类型不符 ×0.15（SELECT 查询不会命中 INSERT 记录）、表零重合 ×0.5、MP 内置保守记录 ×0.6、动态模板 ×1.05；
+- 表/结构/片段三者同时不重合的记录提前剪枝，总分 ≤0.03 丢弃。
+
+**第 3 步 — 排序与渲染**
+按分排序取 top 8。每条命中附带逆向索引信息：SQL 模板、涉及表/列、直接调用者、上游路由，以及各打分依据（可审计「为什么是它」）。
+
 ## 索引格式
 
 `scan` 产出 JSON 地图，核心结构：
@@ -125,9 +165,96 @@ src/
 │   ├── mod.rs    # 扫描编排 + 逆向索引（调用图 BFS → 路由）
 │   ├── java.rs   # Java 扫描（类/字段/方法/常量/注解，线性扫描无回溯）
 │   └── xml.rs    # MyBatis XML 解析 + 注解 SQL/路由补扫
-├── sqlfeat.rs    # SQL 归一化：字面量折叠、表/列提取
-└── matcher.rs    # 打分匹配 + 结果渲染
+├── sqlfeat.rs    # SQL 归一化：skeleton_text、字面量折叠、表/列/别名提取、片段召回
+├── matcher.rs    # 打分匹配 + 结果渲染
+└── store.rs      # 索引 JSON 读写
 ```
+
+## 对接 AI Agent（MCP + Skill）
+
+contextgate 是单文件 CLI，对接 agent 有两条路线，按 agent 的能力选：
+
+| 路线 | 适用 | 复杂度 |
+|---|---|---|
+| **A. CLI + Skill** | 能执行 shell 命令的 agent（Claude Code、atomcode 等） | 无需服务，放一个 Skill 文件即可 |
+| **B. MCP Server** | 无 shell 的 agent / 团队级工具分发 | 需跑一个 stdio MCP 服务 |
+
+两条路线可以叠加：MCP 提供调用通道，Skill 教 agent「何时用、怎么解读输出」。
+
+### 路线 A：CLI + Skill（推荐）
+
+二进制装进 PATH 后，把下面的 Skill 放进 agent 的 skills 目录（Claude Code：`~/.claude/skills/`；atomcode：`~/.atomcode/skills/` 或项目内 `./.atomcode/skills/`），目录名 `slow-sql-locator`：
+
+```markdown
+---
+name: slow-sql-locator
+description: 用 contextgate 把 Spring Boot/MyBatis 项目里实际执行的 SQL 反查到源码位置。用户给出慢 SQL、SQL 日志并问「这段 SQL 是哪发的 / 谁在查这张表 / 对应哪个接口」时使用。
+---
+
+# 慢 SQL → 源码位置
+
+## 步骤
+1. 确认索引：`<项目根>/.contextgate/index.json` 存在；缺失或用户说代码改过，先 `contextgate scan <项目根>`（秒级）
+2. 反查：`contextgate find <项目根> "<SQL>"`——SQL 原样粘贴（含参数值），不要剥别名、不要重排列：匹配引擎自己折叠参数，越原样命中越准
+3. 解读输出并给结论：
+   - top1 分数 ≥ 0.8 且依据含「固定文本片段 1/1 命中」：命中，直接报 file:line + Class#method + 直接调用者 + 上游路由
+   - 分数 0.4–0.8 或多个候选分差 < 0.1：列出 top3 让用户确认，不要擅自选
+   - 命中带 ⚠️（操作类型不符 / MP 内置 / 动态模板 / 运行期拼参）：说明告警含义，置信度相应降级
+   - 无命中：先核对 SQL 的表名是否属于本项目；必要时退化为按表名 grep 源码
+4. 「哪些代码在查 X 表」类问题：scan 后直接查 index.json 的 `records[].tables`
+
+## 注意
+- find 最多返回 8 条；多环境重复 XML 可能让近重复语句都上榜，属正常
+- 本工具只定位不改代码；定位后是否优化索引/改写 SQL 交给用户决策
+```
+
+### 路线 B：MCP Server
+
+把 CLI 包成 `contextgate_scan` / `contextgate_find` 两个 tool 的 stdio MCP 服务，约 40 行（官方 Python SDK）：
+
+```python
+#!/usr/bin/env python3
+"""contextgate MCP server：把 contextgate CLI 包成两个 tool（stdio 传输）。"""
+import shutil, subprocess
+from mcp.server.fastmcp import FastMCP
+
+mcp = FastMCP("contextgate")
+BIN = shutil.which("contextgate") or "/usr/local/bin/contextgate"
+
+def run(*args: str) -> str:
+    p = subprocess.run([BIN, *args], capture_output=True, text=True, timeout=300)
+    if p.returncode != 0:
+        raise RuntimeError(f"contextgate {args[0]} 失败: {(p.stderr or p.stdout).strip()}")
+    return p.stdout.strip()
+
+@mcp.tool()
+def contextgate_scan(project_root: str) -> str:
+    """扫描 Spring Boot + MyBatis 项目，构建 SQL↔源码索引（.contextgate/index.json）。find 前需先调用；代码变更后重新调用。"""
+    return run("scan", project_root)
+
+@mcp.tool()
+def contextgate_find(target: str, sql: str) -> str:
+    """用实际执行的 SQL 反查源码位置：file:line、Class#method、直接调用者、上游路由。target 为项目根或 index.json 路径；sql 原样粘贴（含参数值）。"""
+    return run("find", target, sql)
+
+if __name__ == "__main__":
+    mcp.run()
+```
+
+依赖 `pip install mcp`，然后写入 MCP 客户端配置（Claude Desktop `claude_desktop_config.json` / Cursor `mcp.json` / atomcode 的 MCP 配置，结构一致）：
+
+```json
+{
+  "mcpServers": {
+    "contextgate": {
+      "command": "python3",
+      "args": ["/绝对路径/contextgate_mcp.py"]
+    }
+  }
+}
+```
+
+重启 agent 后它会看到两个 tool。tool 描述里写清调用时机（如上），agent 才能在对的场景主动使用——描述质量直接决定调用率。Rust 实现等价（`rmcp` crate，同样两个 tool），此处以 Python 版为例，最短路径。
 
 ## 已知边界
 
