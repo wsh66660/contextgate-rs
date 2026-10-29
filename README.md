@@ -208,53 +208,37 @@ description: 用 contextgate 把 Spring Boot/MyBatis 项目里实际执行的 SQ
 - 本工具只定位不改代码；定位后是否优化索引/改写 SQL 交给用户决策
 ```
 
-### 路线 B：MCP Server
+### 路线 B：MCP Server（内置，零安装）
 
-把 CLI 包成 `contextgate_scan` / `contextgate_find` 两个 tool 的 stdio MCP 服务，约 40 行（官方 Python SDK）：
+MCP server 是**内置子命令**，Rust 原生实现（stdio 传输，换行分隔 JSON-RPC 2.0，手写协议层无 SDK 依赖），无需 Python/Node 环境：
 
-```python
-#!/usr/bin/env python3
-"""contextgate MCP server：把 contextgate CLI 包成两个 tool（stdio 传输）。"""
-import shutil, subprocess
-from mcp.server.fastmcp import FastMCP
-
-mcp = FastMCP("contextgate")
-BIN = shutil.which("contextgate") or "/usr/local/bin/contextgate"
-
-def run(*args: str) -> str:
-    p = subprocess.run([BIN, *args], capture_output=True, text=True, timeout=300)
-    if p.returncode != 0:
-        raise RuntimeError(f"contextgate {args[0]} 失败: {(p.stderr or p.stdout).strip()}")
-    return p.stdout.strip()
-
-@mcp.tool()
-def contextgate_scan(project_root: str) -> str:
-    """扫描 Spring Boot + MyBatis 项目，构建 SQL↔源码索引（.contextgate/index.json）。find 前需先调用；代码变更后重新调用。"""
-    return run("scan", project_root)
-
-@mcp.tool()
-def contextgate_find(target: str, sql: str) -> str:
-    """用实际执行的 SQL 反查源码位置：file:line、Class#method、直接调用者、上游路由。target 为项目根或 index.json 路径；sql 原样粘贴（含参数值）。"""
-    return run("find", target, sql)
-
-if __name__ == "__main__":
-    mcp.run()
+```bash
+contextgate mcp   # 启动后监听 stdin，把两个 tool 暴露给 MCP 客户端
 ```
 
-依赖 `pip install mcp`，然后写入 MCP 客户端配置（Claude Desktop `claude_desktop_config.json` / Cursor `mcp.json` / atomcode 的 MCP 配置，结构一致）：
+暴露的 tool：
+
+| Tool | 参数 | 说明 |
+|---|---|---|
+| `contextgate_scan` | `project_root`（可选 `out`） | 扫描项目建索引，秒级返回摘要 |
+| `contextgate_find` | `target`（项目根或 index.json 路径）、`sql`（原样粘贴） | 反查源码位置，返回渲染文本 |
+
+MCP 客户端配置（Claude Desktop `claude_desktop_config.json` / Cursor `mcp.json` / atomcode 的 MCP 配置，结构一致）：
 
 ```json
 {
   "mcpServers": {
     "contextgate": {
-      "command": "python3",
-      "args": ["/绝对路径/contextgate_mcp.py"]
+      "command": "contextgate",
+      "args": ["mcp"]
     }
   }
 }
 ```
 
-重启 agent 后它会看到两个 tool。tool 描述里写清调用时机（如上），agent 才能在对的场景主动使用——描述质量直接决定调用率。Rust 实现等价（`rmcp` crate，同样两个 tool），此处以 Python 版为例，最短路径。
+重启 agent 后它会看到两个 tool。tool 描述里写清了调用时机与「SQL 原样粘贴」的约束，agent 才能在对的场景主动使用——描述质量直接决定调用率。若要用 Skill 进一步约束解读方式，把路线 A 的 `slow-sql-locator` Skill 一起装上。
+
+协议实现见 `src/mcp.rs`：支持 `initialize` / `tools/list` / `tools/call` / `ping`，tool 执行失败按协议以 `isError` 结果返回（客户端可直接把错误展示给模型）。
 
 ## 已知边界
 
