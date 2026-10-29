@@ -1,6 +1,6 @@
 [package]
 name = "contextgate"
-version = "0.1.1"
+version = "0.1.2"
 edition = "2021"
 description = "SQL <-> 源码 静态索引：扫描 Java/MyBatis 项目，用实际执行的 SQL 反查源码位置"
 
