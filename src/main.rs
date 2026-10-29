@@ -80,6 +80,21 @@ fn do_scan(root: &Path, out: &Path) -> Result<String, String> {
 
 /// 加载索引并反查，返回渲染文本。CLI 与 MCP 共用。
 fn do_find(index_path: &Path, query: &str) -> Result<String, String> {
+    let hits = find_hits(index_path, query)?;
+    let index = store::load(index_path).map_err(|e| format!("加载索引失败: {e}"))?;
+    Ok(matcher::render_hits(&index, query, &hits))
+}
+
+/// 加载索引并反查，返回机器可读 JSON 字符串（`find --json`）。
+fn do_find_json(index_path: &Path, query: &str) -> Result<String, String> {
+    let hits = find_hits(index_path, query)?;
+    let index = store::load(index_path).map_err(|e| format!("加载索引失败: {e}"))?;
+    serde_json::to_string_pretty(&matcher::hits_to_json(&index, query, &hits))
+        .map_err(|e| format!("序列化失败: {e}"))
+}
+
+/// 共用：加载索引 + 打分。
+fn find_hits(index_path: &Path, query: &str) -> Result<Vec<matcher::MatchHit>, String> {
     if !index_path.is_file() {
         return Err(format!(
             "索引不存在: {}（先对项目根运行 scan）",
@@ -87,11 +102,7 @@ fn do_find(index_path: &Path, query: &str) -> Result<String, String> {
         ));
     }
     let index = store::load(index_path).map_err(|e| format!("加载索引失败: {e}"))?;
-    Ok(matcher::render_hits(
-        &index,
-        query,
-        &matcher::find_sql(&index, query, 8),
-    ))
+    Ok(matcher::find_sql(&index, query, 8))
 }
 
 fn cmd_scan(args: &[String]) {
@@ -114,13 +125,21 @@ fn cmd_scan(args: &[String]) {
 }
 
 fn cmd_find(args: &[String]) {
-    if args.len() < 2 {
-        eprintln!("用法: contextgate find <index.json 或 项目根> \"<SQL>\"");
+    // --json：机器可读输出（服务端/脚本解析）
+    let json_mode = args.first().map(|s| s.as_str()) == Some("--json");
+    let rest = if json_mode { &args[1..] } else { args };
+    if rest.len() < 2 {
+        eprintln!("用法: contextgate find [--json] <index.json 或 项目根> \"<SQL>\"");
         std::process::exit(1);
     }
-    let index_path = resolve_index_path(Path::new(&args[0]));
-    let query = args[1..].join(" ");
-    match do_find(&index_path, &query) {
+    let index_path = resolve_index_path(Path::new(&rest[0]));
+    let query = rest[1..].join(" ");
+    let result = if json_mode {
+        do_find_json(&index_path, &query)
+    } else {
+        do_find(&index_path, &query)
+    };
+    match result {
         Ok(text) => println!("{text}"),
         Err(e) => {
             eprintln!("{e}");

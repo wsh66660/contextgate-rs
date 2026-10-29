@@ -64,6 +64,10 @@ contextgate find <项目根>/.contextgate/index.json "<SQL>"
 
 代码变更后重新 `scan` 一次即可刷新索引（秒级）。
 
+> **服务端集成**：CI 流水线扫描上传 + Spring Boot/MySQL 提供 find 接口的完整对接方案
+> （含 gzip 传输、索引瘦身与去重、多实例缓存、`find --json` 契约）见
+> [docs/spring-boot-integration.md](docs/spring-boot-integration.md)。
+
 ### 匹配打分
 
 | 信号 | 权重 | 说明 |

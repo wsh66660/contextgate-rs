@@ -169,6 +169,59 @@ where
     q.intersection(r).count() as f64 / q.len() as f64
 }
 
+/// 渲染匹配结果为机器可读 JSON（`find --json`，供 Spring Boot 等服务端解析）。
+pub fn hits_to_json(index: &Index, query_sql: &str, hits: &[MatchHit]) -> serde_json::Value {
+    let hits: Vec<serde_json::Value> = hits
+        .iter()
+        .map(|h| {
+            let rec = &h.record;
+            let entry = index.reverse.get(&rec.id);
+            let mut warnings = Vec::new();
+            if rec.mp_builtin {
+                warnings.push("mp-builtin");
+            }
+            if rec.dynamic {
+                warnings.push("dynamic-template");
+            }
+            serde_json::json!({
+                "score": h.score,
+                "recordId": rec.id,
+                "kind": rec.kind,
+                "verb": sql_verb(&rec.skeleton),
+                "sql": rec.sql,
+                "tables": rec.tables,
+                "columns": rec.columns,
+                "file": rec.file,
+                "line": rec.line,
+                "owner": rec.owner,
+                "method": rec.method,
+                "mpBuiltin": rec.mp_builtin,
+                "dynamic": rec.dynamic,
+                "callers": entry.map(|e| e.direct_callers.clone()).unwrap_or_default(),
+                "routes": entry
+                    .map(|e| {
+                        e.routes
+                            .iter()
+                            .map(|r| serde_json::json!({
+                                "method": r.method, "path": r.path,
+                                "controller": r.controller, "handler": r.handler
+                            }))
+                            .collect::<Vec<_>>()
+                    })
+                    .unwrap_or_default(),
+                "reasons": h.reasons,
+                "warnings": warnings,
+            })
+        })
+        .collect();
+    serde_json::json!({
+        "project": index.project,
+        "scannedAt": index.generated_at,
+        "query": query_sql,
+        "hits": hits
+    })
+}
+
 /// 渲染匹配结果为人读文本。
 pub fn render_hits(index: &Index, query_sql: &str, hits: &[MatchHit]) -> String {
     if hits.is_empty() {

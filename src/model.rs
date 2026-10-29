@@ -16,7 +16,10 @@ pub struct SqlRecord {
     pub kind: String,
     /// 提取出的 SQL 模板（MyBatis 动态标签已拍平为内部文本；未知值折为 `?`）
     pub sql: String,
-    /// 归一化骨架 token 序列（字面量折叠为 ?，空白归一）
+    /// 归一化骨架 token 序列（字面量折叠为 ?，空白归一）。
+    /// 索引文件中不落盘——可由 sql 即时派生（占索引体积一半以上），
+    /// load 时由 store::hydrate 统一填充；旧版索引带此字段也能正常读取。
+    #[serde(default, skip_serializing)]
     pub skeleton: Vec<String>,
     /// 涉及的表（小写）
     pub tables: Vec<String>,
@@ -79,6 +82,10 @@ pub struct Index {
     /// mapper/调用者 逆向索引（scan 时预计算）
     #[serde(default)]
     pub reverse: BTreeMap<String, ReverseEntry>,
+    /// SQL 文本去重池：相同模板只存一份原文，重复记录以 `@p{n}` 占位，
+    /// load 时由 store::hydrate 还原（大项目/多环境重复 XML 时显著省体积）
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub sql_pool: BTreeMap<String, String>,
 }
 
 impl Index {
@@ -91,6 +98,7 @@ impl Index {
             routes: Vec::new(),
             entities: Vec::new(),
             reverse: BTreeMap::new(),
+            sql_pool: BTreeMap::new(),
         }
     }
 }
