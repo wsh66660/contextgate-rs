@@ -948,11 +948,28 @@ pub fn looks_like_sql(s: &str) -> bool {
         .any(|k| low.contains(k))
 }
 
+/// 遍历时跳过的目录：构建产物 / IDE 元数据（其中常含解压 jar 或编译副本，
+/// 扫进来会产生重复甚至过期的 SQL 记录）
+pub const EXCLUDED_DIRS: &[&str] = &[
+    "target", "build", "out", "bin", "dist", "node_modules", ".git", ".idea",
+    // jar/boot 解压特征目录
+    "BOOT-INF", "META-INF", ".contextgate",
+];
+
+/// 该目录条目是否应剪枝跳过。
+pub fn is_excluded_dir(e: &walkdir::DirEntry) -> bool {
+    e.file_type().is_dir()
+        && e.file_name()
+            .to_str()
+            .map_or(false, |n| EXCLUDED_DIRS.contains(&n))
+}
+
 /// 遍历项目源码目录，返回 (相对路径, 内容)。
 pub fn collect_java_files(root: &Path) -> Vec<(String, String)> {
     let mut out = Vec::new();
     for entry in walkdir::WalkDir::new(root)
         .into_iter()
+        .filter_entry(|e| !is_excluded_dir(e))
         .filter_map(|e| e.ok())
         .filter(|e| e.file_type().is_file())
     {
@@ -972,6 +989,24 @@ pub fn collect_java_files(root: &Path) -> Vec<(String, String)> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn collect_skips_target_and_build_dirs() {
+        // 回归：target 等构建产物目录必须剪枝，解压 jar / 编译副本不得入索引
+        let dir = std::env::temp_dir().join(format!("cg-excl-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let src = dir.join("src");
+        let tgt = dir.join("target/classes/com/demo");
+        std::fs::create_dir_all(&src).unwrap();
+        std::fs::create_dir_all(&tgt).unwrap();
+        std::fs::write(src.join("X.java"), "class X {}").unwrap();
+        std::fs::write(tgt.join("X.java"), "class X {}").unwrap();
+
+        let files = collect_java_files(&dir);
+        let _ = std::fs::remove_dir_all(&dir);
+        assert_eq!(files.len(), 1, "target 下的 java 不应被收集");
+        assert!(files[0].0.contains("src"));
+    }
 
     #[test]
     fn char_safe_window_with_chinese() {

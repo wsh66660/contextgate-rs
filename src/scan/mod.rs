@@ -68,8 +68,10 @@ pub fn scan_project(root: &Path) -> Index {
         }
     }
 
-    // 第三遍：MyBatis XML
+    // 第三遍：MyBatis XML（跳过构建产物目录，与 Java 遍历同一排除集）
     for entry in walkdir::WalkDir::new(root)
+        .into_iter()
+        .filter_entry(|e| !java::is_excluded_dir(e))
         .into_iter()
         .filter_map(|e| e.ok())
         .filter(|e| {
