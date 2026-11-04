@@ -704,6 +704,12 @@ fn scan_jdbc(
                         let sql = sql.trim().to_string();
                         let has_runtime_param = sql.contains('?');
                         if looks_like_sql(&sql) {
+                            // 尾行：调用语句分号所在行（pos 是字节索引，needle 为 ASCII，切片安全）
+                            let end_line = m.line
+                                + body[pos..]
+                                    .find(';')
+                                    .map(|e| body[pos..pos + e].matches('\n').count() as u32)
+                                    .unwrap_or(0);
                             let (sk, tables, cols) = normalize_sql(&sql);
                             records.push(SqlRecord {
                                 id: owner.to_string(),
@@ -714,6 +720,7 @@ fn scan_jdbc(
                                 columns: cols.into_iter().collect(),
                                 file: cls.file.clone(),
                                 line: m.line,
+                                end_line,
                                 owner: cls.name.clone(),
                                 method: m.name.clone(),
                                 mp_builtin: false,
@@ -793,6 +800,17 @@ fn scan_method_calls(
                             );
                             if let Some(table) = table {
                                 let sql = tpl.replace("{table}", &table);
+                                // 尾行：调用语句分号所在行（i 是字符索引，按字符数换行）
+                                let stmt_end = chars[i..]
+                                    .iter()
+                                    .position(|&c| c == ';')
+                                    .map(|e| i + e)
+                                    .unwrap_or(i);
+                                let end_line = m.line
+                                    + chars[..stmt_end]
+                                        .iter()
+                                        .filter(|&&c| c == '\n')
+                                        .count() as u32;
                                 let (sk, tables, cols) = normalize_sql(&sql);
                                 records.push(SqlRecord {
                                     id: owner.to_string(),
@@ -807,6 +825,7 @@ fn scan_method_calls(
                                     },
                                     file: cls.file.clone(),
                                     line: m.line,
+                                    end_line,
                                     owner: cls.name.clone(),
                                     method: m.name.clone(),
                                     mp_builtin: true,

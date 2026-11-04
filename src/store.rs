@@ -65,6 +65,10 @@ pub fn hydrate(mut index: Index) -> Index {
         if rec.skeleton.is_empty() {
             rec.skeleton = crate::sqlfeat::normalize_sql(&rec.sql).0;
         }
+        // 旧索引无 end_line（serde default = 0）-> 退化为等于起始行
+        if rec.end_line == 0 {
+            rec.end_line = rec.line;
+        }
     }
     index
 }
@@ -89,6 +93,7 @@ mod tests {
             columns: cols.into_iter().collect(),
             file: "src/UserMapper.java".into(),
             line: 24,
+            end_line: 24,
             owner: "UserMapper".into(),
             method: "addBalance".into(),
             mp_builtin: false,

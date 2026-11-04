@@ -29,6 +29,10 @@ pub struct SqlRecord {
     pub file: String,
     /// 起始行号（1-based）
     pub line: u32,
+    /// 尾行号（1-based：XML 为闭合标签所在行，注解为注解结束行，调用点为语句分号所在行）。
+    /// 旧索引缺省时由 store::hydrate 补为等于 line
+    #[serde(default)]
+    pub end_line: u32,
     /// 所属类/接口的简单名
     pub owner: String,
     /// 方法名（XML 语句为 id 属性）

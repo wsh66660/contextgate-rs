@@ -193,6 +193,7 @@ pub fn hits_to_json(index: &Index, query_sql: &str, hits: &[MatchHit]) -> serde_
                 "columns": rec.columns,
                 "file": rec.file,
                 "line": rec.line,
+                "endLine": rec.end_line,
                 "owner": rec.owner,
                 "method": rec.method,
                 "mpBuiltin": rec.mp_builtin,
@@ -233,15 +234,20 @@ pub fn render_hits(index: &Index, query_sql: &str, hits: &[MatchHit]) -> String 
         let verb = sql_verb(&rec.skeleton)
             .map(|v| format!(" [{}]", v.to_uppercase()))
             .unwrap_or_default();
+        let span = if rec.end_line > rec.line {
+            format!(":{}-{}", rec.line, rec.end_line)
+        } else {
+            format!(":{}", rec.line)
+        };
         out.push(format!(
-            "{}. [{}] {} — {}{}（{}:{}）",
+            "{}. [{}] {} — {}{}（{}{}）",
             i + 1,
             h.score,
             rec.id,
             rec.kind,
             verb,
             rec.file,
-            rec.line
+            span
         ));
         out.push(format!("   SQL 模板: {}", abbrev(&rec.sql, 120)));
         if !rec.tables.is_empty() {
@@ -304,6 +310,7 @@ mod tests {
             columns: cols.into_iter().collect(),
             file: "src/UserMapper.java".into(),
             line: 24,
+            end_line: 24,
             owner: "UserMapper".into(),
             method: "addBalance".into(),
             mp_builtin: false,
@@ -324,6 +331,7 @@ mod tests {
                 columns: cols.into_iter().collect(),
                 file: "src/UserMapper.java".into(),
                 line: 10,
+                end_line: 10,
                 owner: "UserMapper".into(),
                 method: id.split('#').next().unwrap_or("").into(),
                 mp_builtin: false,

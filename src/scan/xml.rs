@@ -5,8 +5,8 @@ use crate::model::{Route, SqlRecord};
 use crate::sqlfeat::normalize_sql;
 use regex::Regex;
 
-/// 解析一个 MyBatis XML：返回 (namespace, [(id, 语句文本, 起始行)])。
-pub fn parse_xml_mapper(content: &str) -> (Option<String>, Vec<(String, String, u32)>) {
+/// 解析一个 MyBatis XML：返回 (namespace, [(id, 语句文本, 起始行, 结束行)])。
+pub fn parse_xml_mapper(content: &str) -> (Option<String>, Vec<(String, String, u32, u32)>) {
     let ns = Regex::new(r#"<mapper[^>]*namespace\s*=\s*"([^"]+)""#)
         .unwrap()
         .captures(content)
@@ -44,13 +44,15 @@ pub fn parse_xml_mapper(content: &str) -> (Option<String>, Vec<(String, String, 
             if id.is_empty() {
                 continue;
             }
-            // 起始行：用语句开始位置近似
+            // 起始行：用语句开始位置近似；结束行：闭合标签所在行
             let start = cap.get(0).map(|m| m.start()).unwrap_or(0);
             let line = content[..start].matches('\n').count() as u32 + 1;
+            let end = cap.get(0).map(|m| m.end()).unwrap_or(start);
+            let end_line = content[..end].matches('\n').count() as u32 + 1;
             // 语句体：动态标签拍平 + include 片段展开
             let mut text = cap.get(2).map(|m| m.as_str().to_string()).unwrap_or_default();
             text = flatten_dynamic_tags_inner(&text, &fragments, 0);
-            stmts.push((id, text, line));
+            stmts.push((id, text, line, end_line));
         }
     }
     (ns, stmts)
@@ -152,6 +154,8 @@ pub fn scan_annotation_sql(
             }
         };
         let line = content[..cap.get(0).unwrap().start()].matches('\n').count() as u32 + 1;
+        // 尾行：注解 @Select("...") 覆盖范围结束所在行（end 已用于方法名提取）
+        let end_line = content[..end].matches('\n').count() as u32 + 1;
         let (sk, tables, cols) = normalize_sql(&sql_text);
         records.push(SqlRecord {
             id: format!("{}#{}", class_name, method),
@@ -162,6 +166,7 @@ pub fn scan_annotation_sql(
             columns: cols.into_iter().collect(),
             file: rel.to_string(),
             line,
+            end_line,
             owner: class_name.to_string(),
             method: method.clone(),
             mp_builtin: false,
@@ -244,13 +249,32 @@ mod tests {
 </mapper>"#;
         let (_ns, stmts) = parse_xml_mapper(xml);
         assert_eq!(stmts.len(), 1);
-        let (id, text, _line) = &stmts[0];
+        let (id, text, line, end_line) = &stmts[0];
         assert_eq!(id, "findAll");
         assert!(text.contains("id, app_name, title"), "片段未展开: {text}");
         assert!(!text.contains("include"), "标签残留: {text}");
+        // 尾行回归：起始行 = <select> 标签行，结束行 = </select> 闭合标签行
+        assert_eq!(*line, 3, "起始行应为 <select> 所在行");
+        assert_eq!(*end_line, 6, "结束行应为 </select> 所在行");
         let (_sk, tables, cols) = normalize_sql(text);
         assert!(tables.contains("xxl_job_group"));
         assert!(cols.contains("app_name"), "列归因: {:?}", cols);
         assert!(!cols.contains("refid"), "列污染: {:?}", cols);
+    }
+
+    #[test]
+    fn annotation_end_line_covers_annotation_span() {
+        // 尾行回归：注解 SQL 字符串内的 \n 是转义序列（非物理换行），
+        // 行号必须按物理行算——line 与 end_line 都应在注解所在的物理行
+        let java_src = r#"public interface UserMapper {
+    @Select("SELECT id, name\nFROM users\nWHERE id = #{id}\nORDER BY id")
+    User findById(@Param("id") Long id);
+}"#;
+        let mut records = Vec::new();
+        scan_annotation_sql("UserMapper.java", java_src, "UserMapper", &mut records);
+        assert_eq!(records.len(), 1);
+        let rec = &records[0];
+        assert_eq!(rec.line, 2, "注解起始行");
+        assert_eq!(rec.end_line, 2, "单行注解的结束行应等于起始行（字符串内 \\n 不虚增行号）");
     }
 }

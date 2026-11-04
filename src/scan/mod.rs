@@ -89,7 +89,7 @@ pub fn scan_project(root: &Path) -> Index {
                 .and_then(|n| n.rsplit('.').next())
                 .unwrap_or("UnknownMapper")
                 .to_string();
-            for (id, text, line) in stmts {
+            for (id, text, line, end_line) in stmts {
                 let (sk, tables, cols) = normalize_sql(&text);
                 records.push(SqlRecord {
                     id: format!("{}#{}", ns_simple, id),
@@ -100,6 +100,7 @@ pub fn scan_project(root: &Path) -> Index {
                     columns: cols.into_iter().collect::<Vec<String>>(),
                     file: rel.clone(),
                     line,
+                    end_line,
                     owner: ns_simple.clone(),
                     method: id.clone(),
                     mp_builtin: false,
