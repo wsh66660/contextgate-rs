@@ -230,6 +230,8 @@ pub fn hits_to_json(index: &Index, query_sql: &str, hits: &[MatchHit]) -> serde_
                                         c.split('#').next().unwrap_or(c),
                                         c.split('#').nth(1).unwrap_or("")
                                     ),
+                                    // 拼接串：pkg.Class.method(file.java:50)，可直接用于 IDE 跳转/日志展示
+                                    "method": qualified_caller(index, c),
                                     "package": loc.package,
                                     "file": loc.file,
                                     "line": loc.line
