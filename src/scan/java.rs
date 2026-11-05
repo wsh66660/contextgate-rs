@@ -49,6 +49,10 @@ pub fn strip_comments(src: &str) -> String {
         if c == '/' && i + 1 < b.len() && b[i + 1] == '*' {
             i += 2;
             while i + 1 < b.len() && !(b[i] == '*' && b[i + 1] == '/') {
+                // 块注释内的换行必须补回——否则 javadoc 会让后续所有行号前移
+                if b[i] == '\n' {
+                    out.push('\n');
+                }
                 i += 1;
             }
             i = (i + 2).min(b.len());
@@ -330,14 +334,15 @@ fn parse_members(body: &str, cls: &mut JavaClass, _decl_line: u32, body_off: u32
             // 注解区（往前到上一个 `;` 或 `}`）
             let head_start = last_top_boundary(&chars, j);
             let head: String = chars[head_start..j].iter().collect();
-            // 行号：head_start 之前的换行数 + body 偏移
-            // head_start 是字符索引，必须在字符空间数换行（直接切 body 会在中文处 panic）
-            let line = chars[..head_start]
+            // 行号：方法名所在行（j 为方法名起始索引）——此前取 head_start（注解/
+            // 上一语句边界）所在行，带注解或签名跨行时会少记一行
+            // j 是字符索引，必须在字符空间数换行（直接切 &str 会在中文处 panic）
+            // body_off 即类声明 `{` 所在行号，方法名前换行数 + body_off = 绝对行号
+            let line = chars[..j]
                 .iter()
                 .filter(|c| **c == '\n')
                 .count() as u32
-                + body_off
-                + 1;
+                + body_off;
             // 方法体：找到参数 ')' 后的第一个 '{'
             let mut k = i;
             let mut paren = 0i32;
@@ -991,6 +996,21 @@ mod tests {
     use super::*;
 
     #[test]
+    fn method_line_points_to_declaration_name() {
+        // 回归：method_index 行号应指向方法名所在行——此前取注解区边界行，
+        // 带注解（如 @Transactional）或签名跨行时少记一行（87 记成 86）
+        let src = "package com.demo;\n\npublic class T {\n    @Transactional\n    public Result<Msg> getDecoratedMessage(Long id) {\n        return null;\n    }\n}\n";
+        let cls = parse_java("T.java", src).unwrap();
+        let m = cls
+            .methods
+            .iter()
+            .find(|m| m.name == "getDecoratedMessage")
+            .unwrap();
+        // 第 4 行 @Transactional 注解，第 5 行方法名——应记 5 而非 4
+        assert_eq!(m.line, 5);
+    }
+
+    #[test]
     fn collect_skips_target_and_build_dirs() {
         // 回归：target 等构建产物目录必须剪枝，解压 jar / 编译副本不得入索引
         let dir = std::env::temp_dir().join(format!("cg-excl-test-{}", std::process::id()));
@@ -1078,3 +1098,4 @@ public class ProductServiceImpl extends ServiceImpl<ProductMapper, Product> impl
         assert!(names.contains(&"getByIdOrThrow"), "methods: {:?}", names);
     }
 }
+
