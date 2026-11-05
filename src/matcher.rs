@@ -169,6 +169,24 @@ where
     q.intersection(r).count() as f64 / q.len() as f64
 }
 
+/// 把 `Class#method` 渲染为完整限定定位：
+/// `com.xx.service.TemplateService.getDecoratedMessage(TemplateService.java:50)`。
+/// method_index 查不到（XML 语句节点/旧索引）时回退 `Class#method`。
+fn qualified_caller(index: &Index, caller: &str) -> String {
+    match index.method_index.get(caller) {
+        Some(loc) => {
+            let class = caller.split('#').next().unwrap_or(caller);
+            let method = caller.split('#').nth(1).unwrap_or("");
+            let file_name = loc.file.rsplit('/').next().unwrap_or(&loc.file);
+            format!(
+                "{}.{}.{}({}:{})",
+                loc.package, class, method, file_name, loc.line
+            )
+        }
+        None => caller.to_string(),
+    }
+}
+
 /// 渲染匹配结果为机器可读 JSON（`find --json`，供 Spring Boot 等服务端解析）。
 pub fn hits_to_json(index: &Index, query_sql: &str, hits: &[MatchHit]) -> serde_json::Value {
     let hits: Vec<serde_json::Value> = hits
@@ -199,6 +217,28 @@ pub fn hits_to_json(index: &Index, query_sql: &str, hits: &[MatchHit]) -> serde_
                 "mpBuiltin": rec.mp_builtin,
                 "dynamic": rec.dynamic,
                 "callers": entry.map(|e| e.direct_callers.clone()).unwrap_or_default(),
+                "callerLocations": entry
+                    .map(|e| {
+                        e.direct_callers
+                            .iter()
+                            .map(|c| match index.method_index.get(c) {
+                                Some(loc) => serde_json::json!({
+                                    "id": c,
+                                    "qualified": format!(
+                                        "{}.{}.{}",
+                                        loc.package,
+                                        c.split('#').next().unwrap_or(c),
+                                        c.split('#').nth(1).unwrap_or("")
+                                    ),
+                                    "package": loc.package,
+                                    "file": loc.file,
+                                    "line": loc.line
+                                }),
+                                None => serde_json::json!({ "id": c }),
+                            })
+                            .collect::<Vec<_>>()
+                    })
+                    .unwrap_or_default(),
                 "routes": entry
                     .map(|e| {
                         e.routes
@@ -258,7 +298,13 @@ pub fn render_hits(index: &Index, query_sql: &str, hits: &[MatchHit]) -> String 
         }
         if let Some(entry) = index.reverse.get(&rec.id) {
             if !entry.direct_callers.is_empty() {
-                out.push(format!("   直接调用者: {}", entry.direct_callers.join(", ")));
+                let callers = entry
+                    .direct_callers
+                    .iter()
+                    .map(|c| qualified_caller(index, c))
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                out.push(format!("   直接调用者: {}", callers));
             }
             if !entry.routes.is_empty() {
                 let rs = entry

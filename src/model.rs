@@ -74,6 +74,17 @@ pub struct ReverseEntry {
     pub routes: Vec<Route>,
 }
 
+/// 方法定位：调用者/被调者的完整定位信息（find 展示与跳转用）。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MethodLoc {
+    /// 完整包名（如 com.creditcard.notice.domain.compose.service）
+    pub package: String,
+    /// 源码文件（相对项目根）
+    pub file: String,
+    /// 方法声明起始行（1-based）
+    pub line: u32,
+}
+
 /// 整张索引地图。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Index {
@@ -90,6 +101,11 @@ pub struct Index {
     /// load 时由 store::hydrate 还原（大项目/多环境重复 XML 时显著省体积）
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub sql_pool: BTreeMap<String, String>,
+    /// 方法定位表：`Class#method` -> 包名/文件/行号。调用图与逆向索引只存
+    /// `Class#method`，渲染 find 结果时查此表拼出完整限定定位
+    /// （如 com.xx.TemplateService.getDecoratedMessage(TemplateService.java:50)）
+    #[serde(default)]
+    pub method_index: BTreeMap<String, MethodLoc>,
 }
 
 impl Index {
@@ -103,6 +119,7 @@ impl Index {
             entities: Vec::new(),
             reverse: BTreeMap::new(),
             sql_pool: BTreeMap::new(),
+            method_index: BTreeMap::new(),
         }
     }
 }

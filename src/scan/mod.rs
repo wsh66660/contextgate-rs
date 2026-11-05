@@ -27,6 +27,20 @@ pub fn scan_project(root: &Path) -> Index {
     }
     let mut entity_tables: BTreeMap<String, String> = BTreeMap::new();
     let mut entities = Vec::new();
+    // 方法定位表：调用图/逆向索引只存 Class#method，find 渲染时查此表补全
+    // 包名/文件/行号（重载方法同 key，取首个声明即可区分到文件行级别）
+    let mut method_index: BTreeMap<String, crate::model::MethodLoc> = BTreeMap::new();
+    for cls in &classes {
+        for m in &cls.methods {
+            method_index
+                .entry(format!("{}#{}", cls.name, m.name))
+                .or_insert_with(|| crate::model::MethodLoc {
+                    package: cls.package.clone(),
+                    file: cls.file.clone(),
+                    line: m.line,
+                });
+        }
+    }
     for cls in &classes {
         let is_entity = cls.annotations.contains(&"TableName".to_string())
             || ["entity", "domain", "model", "po"]
@@ -122,6 +136,7 @@ pub fn scan_project(root: &Path) -> Index {
     index.call_graph = edges;
     index.routes = routes;
     index.entities = entities;
+    index.method_index = method_index;
     build_reverse_index(&mut index);
     index
 }
